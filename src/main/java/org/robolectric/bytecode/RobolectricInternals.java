@@ -58,41 +58,6 @@ public class RobolectricInternals {
                 new Object[]{DirectObjectMarker.INSTANCE, shadowedObject});
     }
 
-    public static <T> T directlyOn(T shadowedObject) {
-        Vars vars = getVars();
-
-        if (vars.callDirectly != null) {
-            Object expectedInstance = vars.callDirectly;
-            vars.callDirectly = null;
-            throw new RuntimeException("already expecting a direct call on <" + desc(expectedInstance) + "> but here's a new request for <" + desc(shadowedObject) + ">", vars.stackTraceThrowable);
-        }
-
-        vars.callDirectly = shadowedObject;
-        vars.stackTraceThrowable = new Throwable("original call to directlyOn()");
-        return shadowedObject;
-    }
-
-    private static Vars getVars() {
-        return Vars.ALL_VARS.get();
-    }
-
-    public static boolean shouldCallDirectly(Object directInstance) {
-        Vars vars = getVars();
-        if (vars.callDirectly != null) {
-            if (vars.callDirectly != directInstance) {
-                Object expectedInstance = vars.callDirectly;
-                vars.callDirectly = null;
-                throw new RuntimeException("expected to perform direct call on " + desc(expectedInstance)
-                        + " but got " + desc(directInstance), vars.stackTraceThrowable);
-            } else {
-                vars.callDirectly = null;
-            }
-            return true;
-        } else {
-            return false;
-        }
-    }
-
     private static String desc(Object o) {
         return o == null ? "null" : (
                 (o instanceof Class)
@@ -128,6 +93,10 @@ public class RobolectricInternals {
         }
     }
 
+    public static ClassHandler.Plan methodInvoked(String signature, boolean isStatic, Class<?> theClass) {
+        return classHandler.methodInvoked(signature, isStatic, theClass);
+    }
+
     @SuppressWarnings({"UnusedDeclaration"})
     public static Object intercept(String className, String methodName, Object instance, Object[] paramTypes, Object[] params) throws Throwable {
         try {
@@ -137,6 +106,9 @@ public class RobolectricInternals {
         }
     }
 
+    public static Throwable handleException(Throwable exception) throws Throwable {
+        return exception;
+    }
 
     @SuppressWarnings({"UnusedDeclaration"})
     public static Object autobox(Object o) {

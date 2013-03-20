@@ -49,7 +49,7 @@ public class ThreadSafetyTest {
         @RealObject InstrumentedThread realObject;
         @Implementation
         public void run() {
-            directlyOn(realObject).run();
+            directlyOn(realObject, InstrumentedThread.class).run();
         }
     }
 }

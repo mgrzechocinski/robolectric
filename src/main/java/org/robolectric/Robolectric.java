@@ -405,10 +405,6 @@ public class Robolectric {
         return RobolectricBase.DEFAULT_SHADOW_CLASSES;
     }
 
-    public static <T> T directlyOn(T shadowedObject) {
-        return RobolectricInternals.directlyOn(shadowedObject);
-    }
-
     public static <T> T directlyOn(T shadowedObject, Class<T> clazz) {
         return RobolectricInternals.directlyOn(shadowedObject, clazz);
     }

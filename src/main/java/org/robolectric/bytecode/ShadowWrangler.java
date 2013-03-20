@@ -2,7 +2,6 @@ package org.robolectric.bytecode;
 
 import org.robolectric.internal.RealObject;
 import org.robolectric.util.Function;
-import org.robolectric.util.I18nException;
 import org.robolectric.util.Join;
 
 import java.lang.reflect.Array;
@@ -24,11 +23,10 @@ public class ShadowWrangler implements ClassHandler {
             return null;
         }
     };
-    private static final int MAX_CALL_DEPTH = 200;
     private static final boolean STRIP_SHADOW_STACK_TRACES = true;
 
     public boolean debug = false;
-    private boolean strictI18n = false;
+    boolean strictI18n = false;
 
     private final Map<InvocationProfile, InvocationPlan> invocationPlans = new LinkedHashMap<InvocationProfile, InvocationPlan>() {
         @Override
@@ -36,19 +34,10 @@ public class ShadowWrangler implements ClassHandler {
             return size() > 500;
         }
     };
-    private final Map<Class, MetaShadow> metaShadowMap = new HashMap<Class, MetaShadow>();
     private final ShadowMap shadowMap;
+    private final Map<Class, MetaShadow> metaShadowMap = new HashMap<Class, MetaShadow>();
+    private final Map<String, Plan> planCache = new HashMap<String, Plan>();
     private boolean logMissingShadowMethods = false;
-    private static ThreadLocal<Info> infos = new ThreadLocal<Info>() {
-        @Override
-        protected Info initialValue() {
-            return new Info();
-        }
-    };
-
-    private static class Info {
-        private int callDepth = 0;
-    }
 
     public ShadowWrangler(ShadowMap shadowMap) {
         this.shadowMap = shadowMap;
@@ -82,59 +71,28 @@ public class ShadowWrangler implements ClassHandler {
         }
     }
 
-    private String indent(int count) {
-        StringBuilder buf = new StringBuilder();
-        for (int i = 0; i < count; i++) buf.append("  ");
-        return buf.toString();
+    @Override
+    public Object methodInvoked(Class clazz, String methodName, Object instance, String[] paramTypes, Object[] params) throws Exception {
+        InvocationPlan invocationPlan = getInvocationPlan(clazz, methodName, instance, paramTypes);
+        return invocationPlan.invoke(instance, params, this);
     }
 
     @Override
-    public Object methodInvoked(Class clazz, String methodName, Object instance, String[] paramTypes, Object[] params) throws Exception {
-        Info info = infos.get();
-        if (info.callDepth > MAX_CALL_DEPTH) throw stripStackTrace(new StackOverflowError("too deep!"));
-        try {
-            info.callDepth++;
-            InvocationPlan invocationPlan = getInvocationPlan(clazz, methodName, instance, paramTypes);
-            try {
-                boolean hasShadowImplementation = invocationPlan.hasShadowImplementation();
-                boolean callDirect = !hasShadowImplementation && invocationPlan.shouldDelegateToRealMethodWhenMethodShadowIsMissing();
+    synchronized public Plan methodInvoked(String signature, boolean isStatic, Class<?> theClass) {
+        if (planCache.containsKey(signature)) return planCache.get(signature);
+        Plan plan = calculatePlan(signature, isStatic, theClass);
+        planCache.put(signature, plan);
+        return plan;
+    }
 
-                if (debug) {
-                    String plan = hasShadowImplementation
-                            ? "calling shadow " + (instance == null ? "?" : invocationPlan.getDeclaredShadowClass().getName())
-                            : callDirect ? "calling direct" : "return null";
-                    System.out.println(indent(info.callDepth) + " -> " +
-                            clazz.getName() + "." + methodName + "(" + Join.join(", ", paramTypes) + "): " + plan);
-                }
-
-                if (!hasShadowImplementation) {
-//                    reportNoShadowMethodFound(clazz, methodName, paramTypes);
-                    return callDirect ? invocationPlan.callOriginal(instance, params) : null;
-                } else {
-
-                    // todo: a little strange that this lives here...
-                    if (strictI18n && !invocationPlan.isI18nSafe()) {
-                        throw new I18nException("Method " + methodName + " on class " + clazz.getName() + " is not i18n-safe.");
-                    }
-
-                    return invocationPlan.getMethod().invoke(instance == null ? null : shadowOf(instance), params);
-                }
-            } catch (IllegalArgumentException e) {
-                Object shadow = instance == null ? null : shadowOf(instance);
-                Class<? extends Object> aClass = shadow == null ? null : shadow.getClass();
-                String aClassName = aClass == null ? "<unknown class>" : aClass.getName();
-                throw new RuntimeException(aClassName + " is not assignable from " +
-                        invocationPlan.getDeclaredShadowClass().getName(), e);
-            } catch (InvocationTargetException e) {
-                Throwable cause = e.getCause();
-                if (cause instanceof Exception) {
-                    throw stripStackTrace((Exception) cause);
-                }
-                throw new RuntimeException(cause);
+    private Plan calculatePlan(String signature, boolean isStatic, Class<?> theClass) {
+        final InvocationProfile invocationProfile = new InvocationProfile(signature, isStatic, theClass.getClassLoader());
+        final InvocationPlan invocationPlan = new InvocationPlan(shadowMap, invocationProfile, InvocationPlan.getShadowClass(shadowMap, invocationProfile));
+        return new Plan() {
+            @Override public Object run(Object instance, Object[] params) throws Exception {
+                return invocationPlan.invoke(instance, params, ShadowWrangler.this);
             }
-        } finally {
-            info.callDepth--;
-        }
+        };
     }
 
     private InvocationPlan getInvocationPlan(Class clazz, String methodName, Object instance, String[] paramTypes) {
@@ -144,7 +102,7 @@ public class ShadowWrangler implements ClassHandler {
         synchronized (invocationPlans) {
             InvocationPlan invocationPlan = invocationPlans.get(invocationProfile);
             if (invocationPlan == null) {
-                invocationPlan = new InvocationPlan(shadowMap, invocationProfile);
+                invocationPlan = new InvocationPlan(shadowMap, invocationProfile, InvocationPlan.getShadowClass(shadowMap, invocationProfile));
                 invocationPlans.put(invocationProfile, invocationPlan);
             }
             return invocationPlan;
@@ -175,7 +133,7 @@ public class ShadowWrangler implements ClassHandler {
         return ShadowWrangler.DO_NOTHING_HANDLER;
     }
 
-    private <T extends Throwable> T stripStackTrace(T throwable) {
+    static <T extends Throwable> T stripStackTrace(T throwable) {
         if (STRIP_SHADOW_STACK_TRACES) {
             List<StackTraceElement> stackTrace = new ArrayList<StackTraceElement>();
             for (StackTraceElement stackTraceElement : throwable.getStackTrace()) {

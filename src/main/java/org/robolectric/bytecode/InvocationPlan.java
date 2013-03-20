@@ -5,6 +5,8 @@ import org.fest.reflect.core.Reflection;
 import org.fest.reflect.exception.ReflectionError;
 import org.robolectric.internal.Implementation;
 import org.robolectric.internal.Implements;
+import org.robolectric.util.I18nException;
+import org.robolectric.util.Join;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.InvocationTargetException;
@@ -13,6 +15,15 @@ import java.lang.reflect.Modifier;
 import java.util.Arrays;
 
 class InvocationPlan {
+    private static final int MAX_CALL_DEPTH = 200;
+
+    private static final ThreadLocal<Info> infos = new ThreadLocal<Info>() {
+        @Override
+        protected Info initialValue() {
+            return new Info();
+        }
+    };
+
     private final ShadowMap shadowMap;
     private final Class clazz;
     private final Class shadowClass;
@@ -27,9 +38,19 @@ class InvocationPlan {
     private Class<?> declaredShadowClass;
     private Method method;
 
-    public InvocationPlan(ShadowMap shadowMap, InvocationProfile invocationProfile) {
-        this(shadowMap, invocationProfile.clazz, invocationProfile.shadowClass,
+    public InvocationPlan(ShadowMap shadowMap, InvocationProfile invocationProfile, Class<?> shadowClass1) {
+        this(shadowMap, invocationProfile.clazz, shadowClass1,
                 invocationProfile.methodName, invocationProfile.isStatic, invocationProfile.paramTypes);
+    }
+
+    public static Class<?> getShadowClass(ShadowMap shadowMap, InvocationProfile invocationProfile) {
+        ShadowConfig shadowConfig = shadowMap.get(invocationProfile.clazz);
+        if (shadowConfig == null) return Object.class;
+        try {
+            return invocationProfile.clazz.getClassLoader().loadClass(shadowConfig.shadowClassName);
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public InvocationPlan(ShadowMap shadowMap, Class clazz, Class shadowClass, String methodName, boolean isStatic, String... paramTypes) {
@@ -243,5 +264,62 @@ class InvocationPlan {
         if (methodName.equals("toString") && paramClasses.length == 0) return true;
 
         return false;
+    }
+
+    Object invoke(Object instance, Object[] params, ShadowWrangler shadowWrangler) throws Exception {
+        Info info = infos.get();
+        if (info.callDepth > MAX_CALL_DEPTH) throw shadowWrangler.stripStackTrace(new StackOverflowError("too deep!"));
+        try {
+            info.callDepth++;
+            try {
+                boolean hasShadowImplementation = hasShadowImplementation();
+                boolean callDirect = !hasShadowImplementation && shouldDelegateToRealMethodWhenMethodShadowIsMissing();
+
+                if (shadowWrangler.debug) {
+                    String plan = hasShadowImplementation
+                            ? "calling shadow " + (instance == null ? "?" : getDeclaredShadowClass().getName())
+                            : callDirect ? "calling direct" : "return null";
+                    System.out.println(indent(info.callDepth) + " -> " +
+                            clazz.getName() + "." + methodName + "(" + Join.join(", ", paramTypes) + "): " + plan);
+                }
+
+                if (!hasShadowImplementation) {
+//                    reportNoShadowMethodFound(clazz, methodName, paramTypes);
+                    return callDirect ? callOriginal(instance, params) : null;
+                } else {
+
+                    // todo: a little strange that this lives here...
+                    if (shadowWrangler.strictI18n && !isI18nSafe()) {
+                        throw new I18nException("Method " + methodName + " on class " + clazz.getName() + " is not i18n-safe.");
+                    }
+
+                    return getMethod().invoke(instance == null ? null : shadowWrangler.shadowOf(instance), params);
+                }
+            } catch (IllegalArgumentException e) {
+                Object shadow = instance == null ? null : shadowWrangler.shadowOf(instance);
+                Class<? extends Object> aClass = shadow == null ? null : shadow.getClass();
+                String aClassName = aClass == null ? "<unknown class>" : aClass.getName();
+                throw new RuntimeException(aClassName + " is not assignable from " +
+                        getDeclaredShadowClass().getName(), e);
+            } catch (InvocationTargetException e) {
+                Throwable cause = e.getCause();
+                if (cause instanceof Exception) {
+                    throw ShadowWrangler.stripStackTrace((Exception) cause);
+                }
+                throw new RuntimeException(cause);
+            }
+        } finally {
+            info.callDepth--;
+        }
+    }
+
+    private static String indent(int count) {
+        StringBuilder buf = new StringBuilder();
+        for (int i = 0; i < count; i++) buf.append("  ");
+        return buf.toString();
+    }
+
+    private static class Info {
+        private int callDepth = 0;
     }
 }
